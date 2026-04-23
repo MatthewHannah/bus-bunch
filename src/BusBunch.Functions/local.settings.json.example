@@ -1,0 +1,12 @@
+{
+    "IsEncrypted": false,
+    "Values": {
+        "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+        "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+        "SqlConnectionString": "Server=tcp:YOUR_SERVER.database.windows.net,1433;Database=busbunch;Authentication=Active Directory Default;Encrypt=True;",
+        "Gtfs:VehiclePositionsUrl": "https://tracker.itsmarta.com/gtfs/vehiclepositions.pb",
+        "Gtfs:TripUpdatesUrl": "https://tracker.itsmarta.com/gtfs/tripupdates.pb",
+        "Gtfs:StaticUrl": "https://itsmarta.com/google_transit_feed/google_transit.zip",
+        "Retention:RawDays": "60"
+    }
+}

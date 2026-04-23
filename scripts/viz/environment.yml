@@ -1,0 +1,14 @@
+name: bus-bunch-viz
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pandas>=2.2
+  - pyodbc>=5.1
+  - plotly>=5.22
+  - folium>=0.17
+  - branca>=0.7
+  - python-dateutil>=2.9
+  - pip
+  - pip:
+      - azure-identity>=1.17

@@ -1,0 +1,24 @@
+# Build artifacts
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+
+# Functions / runtime
+local.settings.json
+.azure/
+
+# IDE
+.vs/
+.idea/
+*.swp
+.DS_Store
+
+# Python (scripts/)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+Thumbs.db

@@ -1,0 +1,223 @@
+// ----------------------------------------------------------------------------
+// bus-bunch infrastructure (resource-group scope)
+//
+// Deploys:
+//   - Storage account (required by Functions runtime)
+//   - Log Analytics workspace + Application Insights
+//   - Consumption (Y1) plan + Linux Function App (dotnet-isolated 8)
+//   - Azure SQL logical server + Basic-tier database (5 GiB, ~$5/mo)
+//   - Function App's system-assigned managed identity is granted SQL access
+//     via an Entra-only authentication model: the deploying user is set as
+//     the SQL Entra admin and is then expected to run sql/000_grant_mi.sql
+//     once to add the Function MI as a contained user with read/write/exec
+//     permissions.
+//
+// To deploy:
+//   az deployment group create \
+//     --resource-group bus-bunch \
+//     --template-file infra/main.bicep \
+//     --parameters \
+//        sqlAadAdminLogin="$(az ad signed-in-user show --query userPrincipalName -o tsv)" \
+//        sqlAadAdminObjectId="$(az ad signed-in-user show --query id -o tsv)"
+// ----------------------------------------------------------------------------
+
+targetScope = 'resourceGroup'
+
+@description('Region for all resources.')
+param location string = resourceGroup().location
+
+@description('Short prefix used to name resources. Lowercase letters and numbers only.')
+@minLength(3)
+@maxLength(12)
+param namePrefix string = 'busbunch'
+
+@description('Display name (UPN/email) of the Entra user/group to set as the SQL Entra admin.')
+param sqlAadAdminLogin string
+
+@description('Entra (AAD) object ID of the SQL Entra admin.')
+param sqlAadAdminObjectId string
+
+@description('GTFS-RT vehicle positions URL.')
+param vehiclePositionsUrl string = 'https://tracker.itsmarta.com/gtfs/vehiclepositions.pb'
+
+@description('GTFS-RT trip updates URL.')
+param tripUpdatesUrl string = 'https://tracker.itsmarta.com/gtfs/tripupdates.pb'
+
+@description('Static GTFS bundle URL (the agency google_transit.zip).')
+param staticGtfsUrl string = 'https://itsmarta.com/google_transit_feed/google_transit.zip'
+
+@description('Days of raw snapshot history to retain. Older rows are pruned daily.')
+@minValue(7)
+@maxValue(365)
+param retentionRawDays int = 14
+
+@description('SQL database name.')
+param sqlDatabaseName string = 'busbunch'
+
+// ---------------------------------------------------------------------------
+// names (deterministic per-RG so re-deploys hit the same resources)
+// ---------------------------------------------------------------------------
+var suffix         = uniqueString(resourceGroup().id)
+// Storage account names are 3..24 chars, lowercase alphanum only. Trim
+// the unique-string suffix so the total stays under the cap even if
+// namePrefix uses its full 12-char allowance.
+var storageName    = toLower('${namePrefix}st${take(suffix, 8)}')
+var planName       = '${namePrefix}-plan'
+var functionName   = '${namePrefix}-fn-${suffix}'
+var logsName       = '${namePrefix}-logs'
+var appInsightsName = '${namePrefix}-ai'
+var sqlServerName  = '${namePrefix}-sql-${suffix}'
+
+// ---------------------------------------------------------------------------
+// storage (Functions runtime requirement)
+// ---------------------------------------------------------------------------
+resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: storageName
+  location: location
+  kind: 'StorageV2'
+  sku: { name: 'Standard_LRS' }
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+// ---------------------------------------------------------------------------
+// log analytics + app insights
+// ---------------------------------------------------------------------------
+resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: logsName
+  location: location
+  properties: {
+    sku: { name: 'PerGB2018' }
+    retentionInDays: 30
+  }
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logs.id
+  }
+}
+
+// ---------------------------------------------------------------------------
+// hosting (Consumption plan, Linux)
+// ---------------------------------------------------------------------------
+resource hostingPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+  name: planName
+  location: location
+  sku: {
+    name: 'Y1'
+    tier: 'Dynamic'
+  }
+  kind: 'functionapp,linux'
+  properties: {
+    reserved: true   // Linux
+  }
+}
+
+// ---------------------------------------------------------------------------
+// function app
+// ---------------------------------------------------------------------------
+resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
+  name: functionName
+  location: location
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    serverFarmId: hostingPlan.id
+    httpsOnly: true
+    siteConfig: {
+      linuxFxVersion: 'DOTNET-ISOLATED|8.0'
+      ftpsState: 'Disabled'
+      minTlsVersion: '1.2'
+      use32BitWorkerProcess: false
+      appSettings: [
+        {
+          name: 'AzureWebJobsStorage'
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
+        }
+        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
+        { name: 'FUNCTIONS_WORKER_RUNTIME',    value: 'dotnet-isolated' }
+        { name: 'WEBSITE_RUN_FROM_PACKAGE',    value: '1' }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsights.properties.ConnectionString
+        }
+        {
+          name: 'SqlConnectionString'
+          value: 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Database=${sqlDatabaseName};Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;'
+        }
+        { name: 'Gtfs__VehiclePositionsUrl',   value: vehiclePositionsUrl }
+        { name: 'Gtfs__TripUpdatesUrl',        value: tripUpdatesUrl }
+        { name: 'Gtfs__StaticUrl',             value: staticGtfsUrl }
+        { name: 'Retention__RawDays',          value: string(retentionRawDays) }
+      ]
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// azure sql
+// ---------------------------------------------------------------------------
+resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
+  name: sqlServerName
+  location: location
+  identity: { type: 'SystemAssigned' }
+  properties: {
+    minimalTlsVersion: '1.2'
+    publicNetworkAccess: 'Enabled'
+    // Entra-only auth: no SQL admin login / password. Cleaner and means there
+    // are no shared secrets to rotate.
+    administrators: {
+      administratorType: 'ActiveDirectory'
+      principalType: 'User'
+      login: sqlAadAdminLogin
+      sid: sqlAadAdminObjectId
+      tenantId: subscription().tenantId
+      azureADOnlyAuthentication: true
+    }
+  }
+}
+
+resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
+  parent: sqlServer
+  name: sqlDatabaseName
+  location: location
+  sku: {
+    name: 'Basic'
+    tier: 'Basic'
+    capacity: 5
+  }
+  properties: {
+    collation: 'SQL_Latin1_General_CP1_CI_AS'
+    maxSizeBytes: 2147483648     // 2 GiB (Basic tier max)
+    zoneRedundant: false
+  }
+}
+
+// allow other Azure services (incl. our Function App) to reach SQL
+resource sqlFwAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
+  parent: sqlServer
+  name: 'AllowAllWindowsAzureIps'
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// outputs
+// ---------------------------------------------------------------------------
+output functionAppName     string = functionApp.name
+output functionAppPrincipalId string = functionApp.identity.principalId
+output sqlServerFqdn       string = sqlServer.properties.fullyQualifiedDomainName
+output sqlDatabaseName     string = sqlDb.name
+output sqlConnectionString string = 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Database=${sqlDatabaseName};Authentication=Active Directory Default;Encrypt=True;'
