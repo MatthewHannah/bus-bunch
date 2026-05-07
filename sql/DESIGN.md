@@ -5,7 +5,7 @@ Living design doc for the `busbunch` Azure SQL database.
 > **Server:** `busbunch-sql-dkhvkrmhbltmw.database.windows.net`
 > **Database:** `busbunch` (Azure SQL, Basic 5 DTU tier, 2 GB cap)
 > **Auth:** Entra-only (managed identity for the Function App; users via `az login`)
-> **DDL files:** `sql/001_*.sql` … `sql/006_*.sql`. Apply in numerical order.
+> **DDL files:** `sql/001_*.sql` … `sql/012_*.sql`. Apply in numerical order.
 
 ---
 
@@ -54,6 +54,80 @@ Same shape as v2. `trip_start_date NOT NULL DEFAULT ''` so `UX_arrival_dedupe (t
 ### Static GTFS dimensions (`stop`, `route`, `trip`, `scheduled_stop_time`, `gtfs_static_version`)
 Unchanged from v1/v2. Re-loaded weekly by `LoadStaticGtfsFunction`. **Static and realtime feeds use different `route_id` schemes; join via `trip_id` instead.**
 
+### `dbo.tracked_route` + `dbo.prediction_history` — ETA accuracy capture (migrations `009`–`012`)
+
+Opt-in, per-route recording of MARTA's full prediction trajectory.
+
+`tracked_route (route_id PK)` is the config table. Empty by default; `INSERT INTO tracked_route (route_id) VALUES ('21')` to start recording. Effects start on the next poll.
+
+`prediction_history` is append-per-poll, holding one row per `(snapshot_ts, route_id, trip_id, trip_start_date, stop_sequence)` for any route in `tracked_route`. Clustered on `snapshot_ts` first so the storage-target pruner can do cheap range deletes (mirrors `vehicle_position_snapshot`); NCI on `(trip_id, trip_start_date, stop_sequence, snapshot_ts)` for the analytical join into `stop_arrival_event`. PAGE compression.
+
+The recorder (`sp_RecordPredictionHistory`) is intentionally decoupled from `sp_ProcessPredictionPoll`. It runs **before** ProcessPoll in the same transaction and is unconditional — predictions are recorded on `gap_too_large` / `gap_no_data` / `mass_dropout` polls too, because those events ARE part of MARTA's behavior we want to measure.
+
+Pruning is storage-target, not time-based: `sp_PrunePredictionHistory @target_mb` walks the table from oldest to newest deleting one hour at a time until used MB ≤ target. `vw_prediction_history_window` exposes current `oldest_snapshot_ts` / `used_mb` so analysts can see the effective retention. The DMV read requires `VIEW DATABASE STATE`, granted to PUBLIC in `011`.
+
+Analytical view: `vw_prediction_error` — LEFT JOIN history → arrival, exposes `horizon_seconds`, signed `error_seconds`, and `arrival_resolution ∈ {matched, suspect_cancelled, unresolved}`.
+
+**Currently tracked:** `26916` (Route 21 — Memorial Drive ITP), `26917` (Route 22 — Glenwood). Note the realtime feed currently uses the same numeric `route_id`s as static GTFS (the cross-feed mismatch caveat in §3 may be out of date for buses; verify per-route).
+
+**Sign convention:** `error_seconds = predicted - observed`. Positive = MARTA was pessimistic (bus arrived earlier than predicted). Negative = MARTA was optimistic (bus arrived later than predicted).
+
+#### Canonical example queries
+
+Accuracy curve — median absolute error and P90 by horizon bucket, last 24h:
+```sql
+SELECT
+    CASE
+        WHEN horizon_seconds <   60 THEN '0-1m'
+        WHEN horizon_seconds <  300 THEN '1-5m'
+        WHEN horizon_seconds <  600 THEN '5-10m'
+        WHEN horizon_seconds < 1200 THEN '10-20m'
+        ELSE '20m+'
+    END AS horizon_bucket,
+    COUNT(*) AS n,
+    APPROX_PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ABS(error_seconds)) AS abs_err_p50,
+    APPROX_PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ABS(error_seconds)) AS abs_err_p90,
+    AVG(CAST(error_seconds AS float))                                       AS bias_mean
+FROM dbo.vw_prediction_error
+WHERE arrival_resolution = 'matched'
+  AND snapshot_ts > DATEADD(HOUR, -24, SYSUTCDATETIME())
+GROUP BY
+    CASE
+        WHEN horizon_seconds <   60 THEN '0-1m'
+        WHEN horizon_seconds <  300 THEN '1-5m'
+        WHEN horizon_seconds <  600 THEN '5-10m'
+        WHEN horizon_seconds < 1200 THEN '10-20m'
+        ELSE '20m+'
+    END
+ORDER BY MIN(horizon_seconds);
+```
+
+Per-route bias (is MARTA systematically over- or under-predicting?):
+```sql
+SELECT route_id, route_short_name,
+       COUNT(*) AS n,
+       AVG(CAST(error_seconds AS float)) AS bias_mean_seconds,
+       APPROX_PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY error_seconds) AS bias_median
+FROM dbo.vw_prediction_error
+WHERE arrival_resolution = 'matched'
+  AND horizon_seconds BETWEEN 60 AND 600
+GROUP BY route_id, route_short_name;
+```
+
+Trajectory of a single trip's predictions for one stop (great for marey-style plots):
+```sql
+SELECT snapshot_ts, predicted_arrival_ts, observed_arrival_ts,
+       horizon_seconds, error_seconds
+FROM dbo.vw_prediction_error
+WHERE trip_id = '<trip_id>' AND stop_sequence = <n>
+ORDER BY snapshot_ts;
+```
+
+How much data is queryable right now:
+```sql
+SELECT * FROM dbo.vw_prediction_history_window;
+```
+
 ---
 
 ## 3. Procedures
@@ -89,6 +163,8 @@ Batched delete (5000 rows/batch) from `vehicle_position_snapshot`. Called hourly
 | `vw_stop_headway` | LAG-based per-route headway, high/medium confidence only |
 | `vw_stop_headway_with_sched` | actual + scheduled headway + bunching ratio (joins schedule via `trip_id`) |
 | `vw_stop_trunk_headway` | route-agnostic headway per stop |
+| `vw_prediction_error` | per-prediction signed error vs. eventual arrival, with horizon and `arrival_resolution` |
+| `vw_prediction_history_window` | ops view: current `oldest_snapshot_ts`, `used_mb`, `tracked_route_n` |
 
 ---
 
@@ -103,6 +179,7 @@ Steady-state estimates on Basic 2 GB cap:
 | `staging_predictions` | ~3 MB at peak (truncated every poll) | per-poll |
 | `vehicle_position_snapshot` | ~250 MB at 7 days | 7-day rolling |
 | `stop_arrival_event` | grows; ~150 MB/year est. | forever |
+| `prediction_history` (per tracked route) | ~50–70 MB/route/day (incl. NCI) | storage-target (default 600 MB cap) |
 | `scheduled_stop_time` | ~90 MB | refreshed weekly (full reload) |
 | `trip`, `route`, `stop`, `gtfs_static_version` | ~10 MB total | refreshed weekly |
 

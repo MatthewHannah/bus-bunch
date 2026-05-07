@@ -28,6 +28,9 @@ Snapshots MARTA's GTFS-realtime feeds into Azure SQL so we can analyze
   prediction set against the previous snapshot.
 - **`stop`, `route`, `trip`, `scheduled_stop_time`** — dimensions loaded from
   MARTA's static GTFS (refresh weekly).
+- **`tracked_route`** + **`prediction_history`** — opt-in, per-route capture
+  of MARTA's full prediction trajectory, used to measure ETA prediction
+  accuracy. INSERT a `route_id` into `tracked_route` to start recording.
 
 Headway at a stop = `LAG(observed_arrival_ts)` over `stop_arrival_event`
 partitioned by `(stop_id, route_id, direction_id)`.

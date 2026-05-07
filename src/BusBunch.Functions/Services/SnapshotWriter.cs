@@ -9,11 +9,15 @@ namespace BusBunch.Functions.Services;
 /// Persists one MARTA poll into Azure SQL using the v3 upsert model:
 ///   1. SqlBulkCopy vehicle positions into dbo.vehicle_position_snapshot
 ///   2. SqlBulkCopy parsed trip predictions into dbo.staging_predictions
-///   3. EXEC dbo.sp_ProcessPredictionPoll (MERGE → derive arrivals →
+///   3. EXEC dbo.sp_RecordPredictionHistory (copies tracked-route
+///      predictions into dbo.prediction_history; unconditional)
+///   4. EXEC dbo.sp_ProcessPredictionPoll (MERGE → derive arrivals →
 ///      DELETE disappeared → INSERT snapshot heartbeat → TRUNCATE staging)
 ///
-/// All three steps run inside a single transaction so a mid-poll failure
-/// leaves no half-written state.
+/// All four steps run inside a single transaction so a mid-poll failure
+/// leaves no half-written state. The history recorder runs BEFORE
+/// ProcessPoll specifically so the gap/dropout skip logic in ProcessPoll
+/// doesn't filter what we record — we want MARTA's raw behavior.
 /// </summary>
 public class SnapshotWriter
 {
@@ -53,6 +57,9 @@ public class SnapshotWriter
             await BulkCopyVehiclePositionsAsync(conn, tx, snapshotTs, vehicleFeed, ct);
             await BulkCopyStagingPredictionsAsync(conn, tx, tripFeed, ct);
 
+            var recordedN = await ExecRecordPredictionHistoryAsync(
+                conn, tx, snapshotTs, ct);
+
             var result = await ExecProcessPollAsync(
                 conn, tx, snapshotTs, feedTs, pollDurationMs,
                 vehicleFeed.Entity.Count, tripFeed.Entity.Count, ct);
@@ -62,15 +69,15 @@ public class SnapshotWriter
             if (result.SkippedReason is not null)
             {
                 _logger.LogWarning(
-                    "Snapshot {SnapTs:o} SKIPPED ({Reason}): gap={GapS}s, prev={PrevTs:o}",
-                    snapshotTs, result.SkippedReason, result.GapS, result.PrevSnapshotTs);
+                    "Snapshot {SnapTs:o} SKIPPED ({Reason}): gap={GapS}s, prev={PrevTs:o}, history_recorded={Rec}",
+                    snapshotTs, result.SkippedReason, result.GapS, result.PrevSnapshotTs, recordedN);
             }
             else
             {
                 _logger.LogInformation(
-                    "Snapshot {SnapTs:o}: {Up} upsert, {Dis} disappeared, {Der} derived, {Res} resurrected, {Veh} vehicles, gap={GapS}s",
+                    "Snapshot {SnapTs:o}: {Up} upsert, {Dis} disappeared, {Der} derived, {Res} resurrected, {Veh} vehicles, {Rec} history, gap={GapS}s",
                     snapshotTs, result.UpsertN, result.DisappearedN, result.DerivedN, result.ResurrectedN,
-                    vehicleFeed.Entity.Count, result.GapS);
+                    vehicleFeed.Entity.Count, recordedN, result.GapS);
             }
         }
         catch
@@ -216,6 +223,24 @@ public class SnapshotWriter
     // -----------------------------------------------------------------------
     // proc invocation
     // -----------------------------------------------------------------------
+
+    private static async Task<int> ExecRecordPredictionHistoryAsync(
+        SqlConnection conn, SqlTransaction tx,
+        DateTime snapshotTs, CancellationToken ct)
+    {
+        await using var cmd = new SqlCommand("dbo.sp_RecordPredictionHistory", conn, tx)
+        {
+            CommandType = CommandType.StoredProcedure,
+            CommandTimeout = 60,
+        };
+        cmd.Parameters.Add("@snapshot_ts", SqlDbType.DateTime2, 0).Value = snapshotTs;
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            throw new InvalidOperationException("sp_RecordPredictionHistory returned no rows");
+
+        return reader.GetInt32(0);
+    }
 
     private static async Task<PollResult> ExecProcessPollAsync(
         SqlConnection conn, SqlTransaction tx,

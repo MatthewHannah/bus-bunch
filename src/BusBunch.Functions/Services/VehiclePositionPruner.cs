@@ -57,6 +57,11 @@ public class VehiclePositionPruner
 public sealed class RetentionOptions
 {
     public int VehiclePositionDays { get; init; } = 7;
+
+    // Storage cap for dbo.prediction_history. The pruner deletes oldest
+    // rows until used MB <= this value. 600 MB ≈ a few days with several
+    // routes tracked, weeks with one route.
+    public int PredictionHistoryTargetMb { get; init; } = 600;
 }
 
 public sealed record PruneResult(int DeletedPositions, DateTime CutoffTs);

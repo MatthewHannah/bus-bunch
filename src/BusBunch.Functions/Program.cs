@@ -68,10 +68,12 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton(sp =>
 {
     var cfg = sp.GetRequiredService<IConfiguration>();
-    var raw = cfg["Retention:VehiclePositionDays"];
+    var rawDays = cfg["Retention:VehiclePositionDays"];
+    var rawMb   = cfg["Retention:PredictionHistoryTargetMb"];
     return new RetentionOptions
     {
-        VehiclePositionDays = int.TryParse(raw, out var n) && n > 0 ? n : 7,
+        VehiclePositionDays       = int.TryParse(rawDays, out var d) && d > 0 ? d : 7,
+        PredictionHistoryTargetMb = int.TryParse(rawMb,   out var m) && m > 0 ? m : 600,
     };
 });
 
@@ -79,5 +81,6 @@ builder.Services.AddSingleton<GtfsRealtimeClient>();
 builder.Services.AddSingleton<SnapshotWriter>();
 builder.Services.AddSingleton<StaticGtfsLoader>();
 builder.Services.AddSingleton<VehiclePositionPruner>();
+builder.Services.AddSingleton<PredictionHistoryPruner>();
 
 builder.Build().Run();
