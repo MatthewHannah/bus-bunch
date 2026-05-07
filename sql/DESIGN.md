@@ -36,8 +36,8 @@ The previous (v1/v2) design appended a full prediction snapshot per poll and pru
 | `feed_ts` | `datetime2(0)` | `FeedHeader.timestamp` from the trip feed |
 | `vehicle_entity_n`, `trip_entity_n` | `int` | feed entity counts |
 | `poll_duration_ms` | `int` | end-to-end poll latency |
-| `upsert_n`, `disappeared_n`, `derived_n` | `int` | per-poll counters from `sp_ProcessPredictionPoll` |
-| `skipped_reason` | `varchar(32)` | NULL on healthy polls; `'gap_too_large'` or `'mass_dropout'` when the proc skipped derivation |
+| `upsert_n`, `disappeared_n`, `derived_n`, `resurrected_n` | `int` | per-poll counters from `sp_ProcessPredictionPoll` (`resurrected_n` is NULL on rows written before migration `007`) |
+| `skipped_reason` | `varchar(32)` | NULL on healthy polls; `'gap_too_large'` (resync — live state was MERGEd, derive skipped), `'gap_no_data'` (long gap with empty staging, nothing done), or `'mass_dropout'` (suspicious staging, nothing done) |
 
 ### `dbo.trip_stop_prediction` — LIVE prediction state
 PK clustered on `(trip_id, stop_sequence)`. One row per currently-predicted (trip, stop). Includes `first_seen_ts` and `last_seen_ts` for diagnostics; `last_seen_ts` is what disambiguates "disappeared this poll" from "still here".
@@ -61,16 +61,19 @@ Unchanged from v1/v2. Re-loaded weekly by `LoadStaticGtfsFunction`. **Static and
 ### `sp_ProcessPredictionPoll @snapshot_ts, @feed_ts, @poll_duration_ms, @vehicle_entity_n, @trip_entity_n`
 The per-poll engine. See `004_sp_process_poll.sql` header for the full decision tree.
 
-**Outage skips.** When `gap_s > 300` OR `staging` empty with `live > 0` OR `disappeared/live > 0.5`, the proc:
-- does NOT MERGE,
-- does NOT delete,
-- does NOT emit events,
-- *does* INSERT the heartbeat with `skipped_reason` set,
-- does NOT truncate staging (keeps the data around in case you want to inspect it).
+**Outage skips.** Three flavors:
 
-The next healthy poll re-MERGES; whatever genuinely arrived during the gap will look like normal disappearances then. Cost: slightly stale `last_seen_ts` for one poll. Benefit: no fake arrivals during feed glitches.
+| Reason | Trigger | What runs |
+|---|---|---|
+| `gap_too_large` | `gap_s > 300` AND `staging_n > 0` | MERGE + resurrection + delete-stale (live state is **resynced** to current staging). Derive is skipped — we can't fabricate arrival timestamps across a multi-hour gap. Heartbeat is recorded; staging is truncated. **Counts as a baseline** for the next poll. |
+| `gap_no_data`   | `gap_s > 300` AND `staging_n = 0` | Nothing — no MERGE, no delete, no derive. Does **not** count as a baseline. The next poll with data will trip `gap_too_large` and resync. |
+| `mass_dropout`  | (`live > 0` AND `staging` empty) OR `disappeared/live > 0.5` | Nothing. Does **not** count as a baseline. Self-healing: the next healthy poll's gap from the last good snapshot is normally still small. |
 
-**`prev_snapshot_ts` is the most recent NON-SKIPPED snapshot**, not the most recent of any kind — so a chain of skipped polls doesn't poison the next derive.
+In all three cases the heartbeat row is INSERTed with `skipped_reason` set so the warning surfaces in logs (`SnapshotWriter.cs`), and staging is truncated.
+
+**`prev_snapshot_ts` = most recent snapshot with `skipped_reason IS NULL OR skipped_reason = 'gap_too_large'`.** Healthy polls and trusted gap-resyncs are valid baselines; `gap_no_data` and `mass_dropout` are not (they didn't update live state). Before migration `008` only NULL counted, which meant a single `gap_too_large` could permanently stall the system — the baseline never advanced, so every subsequent poll re-tripped `gap_too_large`.
+
+**Resurrection (migration `007`).** When MARTA temporarily drops a trip's stops from `tripupdates` mid-route, the previous poll's derive emits `suspect_cancelled` arrivals (with `observed_arrival_ts = @snapshot_ts`, confidence `low`). If MARTA later resumes publishing predictions for those same `(trip_id, trip_start_date, stop_sequence)` keys, the proc — immediately after the MERGE — DELETEs those bogus events. This frees `UX_arrival_dedupe` so the bus's actual later arrival can be derived properly. Counter exposed as `snapshot.resurrected_n`. Forward-only: historical bogus rows from before `007` deployed are not retroactively cleaned (their real arrival times are unrecoverable since the prediction history isn't kept).
 
 ### `sp_PruneVehiclePositions @cutoff_ts`
 Batched delete (5000 rows/batch) from `vehicle_position_snapshot`. Called hourly by `PruneSnapshotsFunction` with `cutoff_ts = now - 7 days`.

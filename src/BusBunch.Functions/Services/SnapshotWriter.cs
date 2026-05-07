@@ -68,8 +68,8 @@ public class SnapshotWriter
             else
             {
                 _logger.LogInformation(
-                    "Snapshot {SnapTs:o}: {Up} upsert, {Dis} disappeared, {Der} derived, {Veh} vehicles, gap={GapS}s",
-                    snapshotTs, result.UpsertN, result.DisappearedN, result.DerivedN,
+                    "Snapshot {SnapTs:o}: {Up} upsert, {Dis} disappeared, {Der} derived, {Res} resurrected, {Veh} vehicles, gap={GapS}s",
+                    snapshotTs, result.UpsertN, result.DisappearedN, result.DerivedN, result.ResurrectedN,
                     vehicleFeed.Entity.Count, result.GapS);
             }
         }
@@ -245,7 +245,8 @@ public class SnapshotWriter
             UpsertN:        reader.GetInt32(3),
             DisappearedN:   reader.GetInt32(4),
             DerivedN:       reader.GetInt32(5),
-            SkippedReason:  reader.IsDBNull(6) ? null : reader.GetString(6));
+            ResurrectedN:   reader.GetInt32(6),
+            SkippedReason:  reader.IsDBNull(7) ? null : reader.GetString(7));
     }
 
     // -----------------------------------------------------------------------
@@ -278,4 +279,5 @@ public sealed record PollResult(
     int       UpsertN,
     int       DisappearedN,
     int       DerivedN,
+    int       ResurrectedN,
     string?   SkippedReason);

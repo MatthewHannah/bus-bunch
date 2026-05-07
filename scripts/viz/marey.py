@@ -30,8 +30,8 @@ pio.renderers.default = "browser"
 # ## Config
 
 # %%
-ROUTE_SHORT_NAME = "14"     # e.g. "22", "110", "816"
-DIRECTION_ID     = 0        # 0 or 1
+ROUTE_SHORT_NAME = "22"     # e.g. "22", "110", "816"
+DIRECTION_ID     = 1        # 0 or 1
 LOOKBACK_HOURS   = 24
 
 # %% [markdown]

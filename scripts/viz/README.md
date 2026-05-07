@@ -31,8 +31,9 @@ az account show >/dev/null || az login
 
 ```bash
 conda activate bus-bunch-viz
-python bunching.py    # 3 charts + bunching_map.html
-python marey.py       # string-line diagram
+python bunching.py       # 3 charts + bunching_map.html
+python marey.py          # string-line diagram
+python vehicle_track.py  # one bus's trail on a map, with time slider
 ```
 
 Or open either file in VS Code — it'll recognize the `# %%` cell markers and
@@ -46,4 +47,7 @@ give you a notebook UI with inline Plotly charts.
   bunching index over time, geographic bubble map (Plotly + Folium).
 - `marey.py` — string-line diagram for a single route+direction. Time on X,
   stop sequence on Y, one line per bus run. Bunching = lines converging.
+- `vehicle_track.py` — single-bus trail on a map for one `vehicle_id` over
+  the last N hours, with a time slider that highlights the bus's position
+  at the chosen minute.
 - `environment.yml` — conda spec.

@@ -12,6 +12,8 @@ DDL for the bus-bunch database. Apply in numerical order against an empty Azure 
 | `004_sp_process_poll.sql`           | `dbo.sp_ProcessPredictionPoll` — the per-poll engine (MERGE + derive + heartbeat) |
 | `005_sp_prune_vehicle_positions.sql`| `dbo.sp_PruneVehiclePositions` — hourly cleanup of vehicle_position_snapshot |
 | `006_views.sql`                     | `vw_latest_snapshot`, `vw_live_eta`, `vw_stop_headway`, `vw_stop_headway_with_sched`, `vw_stop_trunk_headway` |
+| `007_resurrect_cancelled.sql`       | Replaces `sp_ProcessPredictionPoll` to resurrect `suspect_cancelled` arrivals; adds `snapshot.resurrected_n` |
+| `008_recover_from_gap.sql`          | Replaces `sp_ProcessPredictionPoll` so `gap_too_large` resyncs live state instead of stalling forever; adds `gap_no_data` skip reason |
 
 ## Apply against Azure SQL with Entra
 
