@@ -66,7 +66,7 @@ The recorder (`sp_RecordPredictionHistory`) is intentionally decoupled from `sp_
 
 Pruning is storage-target, not time-based: `sp_PrunePredictionHistory @target_mb` walks the table from oldest to newest deleting one hour at a time until used MB ≤ target. `vw_prediction_history_window` exposes current `oldest_snapshot_ts` / `used_mb` so analysts can see the effective retention. The DMV read requires `VIEW DATABASE STATE`, granted to PUBLIC in `011`.
 
-Analytical view: `vw_prediction_error` — LEFT JOIN history → arrival, exposes `horizon_seconds`, signed `error_seconds`, and `arrival_resolution ∈ {matched, suspect_cancelled, unresolved}`.
+Analytical view: `vw_prediction_error` — LEFT JOIN history → arrival → schedule, exposes `horizon_seconds`, signed `error_seconds`, `arrival_resolution ∈ {matched, suspect_cancelled, unresolved}`, and `scheduled_arrival_seconds` (raw seconds since service-day local midnight from `scheduled_stop_time`; NULL for ADDED/unscheduled trips).
 
 **Currently tracked:** `26916` (Route 21 — Memorial Drive ITP), `26917` (Route 22 — Glenwood). Note the realtime feed currently uses the same numeric `route_id`s as static GTFS (the cross-feed mismatch caveat in §3 may be out of date for buses; verify per-route).
 
@@ -163,7 +163,7 @@ Batched delete (5000 rows/batch) from `vehicle_position_snapshot`. Called hourly
 | `vw_stop_headway` | LAG-based per-route headway, high/medium confidence only |
 | `vw_stop_headway_with_sched` | actual + scheduled headway + bunching ratio (joins schedule via `trip_id`) |
 | `vw_stop_trunk_headway` | route-agnostic headway per stop |
-| `vw_prediction_error` | per-prediction signed error vs. eventual arrival, with horizon and `arrival_resolution` |
+| `vw_prediction_error` | per-prediction signed error vs. eventual arrival, with horizon, `arrival_resolution`, and `scheduled_arrival_seconds` (from the static schedule, NULL for ADDED trips) |
 | `vw_prediction_history_window` | ops view: current `oldest_snapshot_ts`, `used_mb`, `tracked_route_n` |
 
 ---

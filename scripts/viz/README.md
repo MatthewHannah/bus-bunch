@@ -34,6 +34,10 @@ conda activate bus-bunch-viz
 python bunching.py       # 3 charts + bunching_map.html
 python marey.py          # string-line diagram
 python vehicle_track.py  # one bus's trail on a map, with time slider
+python prediction_evolution.py  # how each trip's ETA at one stop evolved
+python prediction_drift.py      # same, Y = drift (min) from first prediction
+python prediction_error.py      # same, Y = predicted − observed (min)
+python vehicle_gps_audit.py     # debug: GPS pings + per-trip arrival counts
 ```
 
 Or open either file in VS Code — it'll recognize the `# %%` cell markers and
@@ -50,4 +54,19 @@ give you a notebook UI with inline Plotly charts.
 - `vehicle_track.py` — single-bus trail on a map for one `vehicle_id` over
   the last N hours, with a time slider that highlights the bus's position
   at the chosen minute.
+- `prediction_evolution.py` — for one stop, plots each upcoming bus's
+  predicted-arrival ETA as it evolved across successive polls, with the
+  observed and scheduled arrivals overlaid per trip. Requires the route to
+  be in `dbo.tracked_route`.
+- `prediction_drift.py` — same data as `prediction_evolution.py`, but the Y
+  axis is the *difference* (in minutes) between each prediction and that
+  trip's first observed prediction. Flat ≈ 0 = stable ETA; rising = MARTA
+  kept pushing the arrival later.
+- `prediction_error.py` — same data again, Y = `predicted − observed`
+  (minutes). Anchored on ground truth: every line should taper to 0 as the
+  bus arrives. Skips trips with no derived `stop_arrival_event`.
+- `vehicle_gps_audit.py` — debug tool. For one `vehicle_id` and time window,
+  shows a per-trip summary (with derived-arrival counts joined in, so
+  "trip had 40 pings, 0 arrivals" jumps out in red) plus the full raw GPS
+  ping table. Also writes the raw pings to a CSV.
 - `environment.yml` — conda spec.

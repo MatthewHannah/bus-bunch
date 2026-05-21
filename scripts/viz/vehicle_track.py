@@ -29,12 +29,12 @@ pio.renderers.default = "browser"
 # ## Config
 
 # %%
-VEHICLE_ID      = "7070"   # MARTA vehicle ID. To find busy ones, run:
+VEHICLE_ID      = "1544"   # MARTA vehicle ID. To find busy ones, run:
                            #   SELECT TOP 20 vehicle_id, COUNT(*) n
                            #   FROM dbo.vehicle_position_snapshot
                            #   WHERE snapshot_ts > DATEADD(hour,-24,SYSUTCDATETIME())
                            #   GROUP BY vehicle_id ORDER BY n DESC;
-LOOKBACK_HOURS  = 2
+LOOKBACK_HOURS  = 24
 SLIDER_STEP_MIN = 0        # 0 = one slider tick per snapshot (recommended,
                            #     so prev/next buttons step one ping at a time);
                            # >0 = bucket the slider to that many minutes for a
