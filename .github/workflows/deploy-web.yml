@@ -1,0 +1,75 @@
+name: Deploy viz website
+
+# Builds the React app in web/ and deploys it to Azure Static Web Apps (Free).
+# Free-tier SWA can't proxy /api/* to an external Function App, so the bundle
+# is built with VITE_API_BASE pointing directly at the Function App's
+# azurewebsites.net hostname. The Function App's CORS allowlist (set in
+# infra/main.bicep) lets the SWA origin call it from the browser.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/deploy-web.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+  workflow_dispatch:
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    name: Build and deploy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          lfs: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Type-check
+        working-directory: web
+        run: npx tsc --noEmit
+
+      - name: Build (with API base baked in)
+        working-directory: web
+        env:
+          # Set this repo secret to the Function App's API base, e.g.
+          #   https://busbunch-fn-xxxxxxxx.azurewebsites.net/api
+          # `azd env get-value webApiBase` after `az deployment group create`
+          # prints the correct value.
+          VITE_API_BASE: ${{ secrets.VIZ_API_BASE }}
+        run: npm run build
+
+      - name: Deploy to Azure Static Web Apps
+        if: github.event_name != 'pull_request'
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: 'upload'
+          app_location: 'web'
+          output_location: 'dist'
+          skip_app_build: true
+          skip_api_build: true
+
+  close_pr:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    name: Close PR preview
+    steps:
+      - uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: 'close'

@@ -5,7 +5,8 @@
 //   - Storage account (required by Functions runtime)
 //   - Log Analytics workspace + Application Insights
 //   - Consumption (Y1) plan + Linux Function App (dotnet-isolated 8)
-//   - Azure SQL logical server + Basic-tier database (5 GiB, ~$5/mo)
+//   - Azure SQL logical server + Standard S1 database (10 GiB, ~$20/mo;
+//     originally Basic 2 GiB but the dataset outgrew it)
 //   - Function App's system-assigned managed identity is granted SQL access
 //     via an Entra-only authentication model: the deploying user is set as
 //     the SQL Entra admin and is then expected to run sql/000_grant_mi.sql
@@ -54,6 +55,11 @@ param retentionRawDays int = 14
 @description('SQL database name.')
 param sqlDatabaseName string = 'busbunch'
 
+@description('Origins allowed to call the Function App API directly (in addition to the Static Web App default hostname, which is added automatically). Useful for local dev (http://localhost:5173) or a custom domain.')
+param extraApiCorsOrigins array = [
+  'http://localhost:5173'
+]
+
 // ---------------------------------------------------------------------------
 // names (deterministic per-RG so re-deploys hit the same resources)
 // ---------------------------------------------------------------------------
@@ -67,6 +73,7 @@ var functionName   = '${namePrefix}-fn-${suffix}'
 var logsName       = '${namePrefix}-logs'
 var appInsightsName = '${namePrefix}-ai'
 var sqlServerName  = '${namePrefix}-sql-${suffix}'
+var staticSiteName = '${namePrefix}-web'
 
 // ---------------------------------------------------------------------------
 // storage (Functions runtime requirement)
@@ -122,6 +129,30 @@ resource hostingPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
 }
 
 // ---------------------------------------------------------------------------
+// static web app (Free SKU) — hosts the React viz frontend in web/.
+// Free tier doesn't support linked backends, so the browser calls the
+// Function App directly via its azurewebsites.net hostname (with CORS
+// allowlisted above). The deployment token is consumed by GH Actions.
+// ---------------------------------------------------------------------------
+resource staticSite 'Microsoft.Web/staticSites@2023-12-01' = {
+  name: staticSiteName
+  // SWA Free is only offered in a handful of regions; eastus2 is the safe
+  // default and is independent of `location` (which controls the rest of
+  // the stack and may be set to something SWA Free does not support).
+  location: 'eastus2'
+  sku: {
+    name: 'Free'
+    tier: 'Free'
+  }
+  properties: {
+    // Repo metadata intentionally left blank: deployment uses the static
+    // site's API token from GitHub Actions, not the built-in source-control
+    // wiring (which would try to create its own workflow).
+    provider: 'None'
+  }
+}
+
+// ---------------------------------------------------------------------------
 // function app
 // ---------------------------------------------------------------------------
 resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
@@ -139,6 +170,18 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       use32BitWorkerProcess: false
+      cors: {
+        // The SWA free tier can't proxy /api/* to an external Function App
+        // (that needs Standard SKU's linked-backend feature), so the browser
+        // calls the Function App directly. CORS must allow:
+        //   - the SWA's generated hostname (added below)
+        //   - any extra dev/custom-domain origins (extraApiCorsOrigins)
+        allowedOrigins: union(
+          extraApiCorsOrigins,
+          [ 'https://${staticSite.properties.defaultHostname}' ]
+        )
+        supportCredentials: false
+      }
       appSettings: [
         {
           name: 'AzureWebJobsStorage'
@@ -191,14 +234,18 @@ resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   parent: sqlServer
   name: sqlDatabaseName
   location: location
+  // Bumped from Basic 2 GiB to S1 10 GiB because the dataset (kept-forever
+  // stop_arrival_event + 7-day vehicle_position_snapshot + prediction
+  // history) outgrew the Basic cap. Going back to Basic would require
+  // pruning stop_arrival_event aggressively, which we don't want.
   sku: {
-    name: 'Basic'
-    tier: 'Basic'
-    capacity: 5
+    name: 'S1'
+    tier: 'Standard'
+    capacity: 20
   }
   properties: {
     collation: 'SQL_Latin1_General_CP1_CI_AS'
-    maxSizeBytes: 2147483648     // 2 GiB (Basic tier max)
+    maxSizeBytes: 10737418240    // 10 GiB (S1 max)
     zoneRedundant: false
   }
 }
@@ -217,7 +264,11 @@ resource sqlFwAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
 // outputs
 // ---------------------------------------------------------------------------
 output functionAppName     string = functionApp.name
+output functionAppHostname string = functionApp.properties.defaultHostName
 output functionAppPrincipalId string = functionApp.identity.principalId
 output sqlServerFqdn       string = sqlServer.properties.fullyQualifiedDomainName
 output sqlDatabaseName     string = sqlDb.name
 output sqlConnectionString string = 'Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Database=${sqlDatabaseName};Authentication=Active Directory Default;Encrypt=True;'
+output staticSiteName      string = staticSite.name
+output staticSiteHostname  string = staticSite.properties.defaultHostname
+output webApiBase          string = 'https://${functionApp.properties.defaultHostName}/api'

@@ -44,8 +44,8 @@ ET = "America/New_York"
 STOP_ID          = "104076"               # MARTA stop_id
 ROUTE_SHORT_NAME = ""                   # realtime/public route number; "" or None = ALL routes serving this stop
 DIRECTION_ID     = 0                      # 0 or 1; ignored when ROUTE_SHORT_NAME is empty
-WINDOW_START_ET  = "2026-05-19 06:00"     # local (Eastern)
-WINDOW_END_ET    = "2026-05-19 12:00"
+WINDOW_START_ET  = "2026-05-28 06:00"     # local (Eastern)
+WINDOW_END_ET    = "2026-05-28 12:00"
 
 # Drop predictions whose horizon is huge (e.g. 60+ min away). They dominate
 # the Y axis and aren't usually what you want to look at. Set to None to keep

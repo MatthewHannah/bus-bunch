@@ -82,5 +82,11 @@ builder.Services.AddSingleton<SnapshotWriter>();
 builder.Services.AddSingleton<StaticGtfsLoader>();
 builder.Services.AddSingleton<VehiclePositionPruner>();
 builder.Services.AddSingleton<PredictionHistoryPruner>();
+builder.Services.AddSingleton<SqlReader>();
+
+// In-process cache for the cheap picker endpoints (/routes, /tracked-routes).
+// Keeps the "first user pays" window short and prevents accidental re-runs of
+// the recency probe on every page navigation.
+builder.Services.AddMemoryCache();
 
 builder.Build().Run();
