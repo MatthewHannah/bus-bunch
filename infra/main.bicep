@@ -4,7 +4,7 @@
 // Deploys:
 //   - Storage account (required by Functions runtime)
 //   - Log Analytics workspace + Application Insights
-//   - Consumption (Y1) plan + Linux Function App (dotnet-isolated 8)
+//   - Flex Consumption (FC1) plan + Linux Function App (dotnet-isolated 10)
 //   - Azure SQL logical server + Standard S1 database (10 GiB, ~$20/mo;
 //     originally Basic 2 GiB but the dataset outgrew it)
 //   - Function App's system-assigned managed identity is granted SQL access
@@ -90,6 +90,22 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
+// Flex Consumption pulls the app package from a blob container at scale-out.
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storage
+  name: 'default'
+}
+
+resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: 'deploymentpackage'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+var storageConnectionString = 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
+
 // ---------------------------------------------------------------------------
 // log analytics + app insights
 // ---------------------------------------------------------------------------
@@ -113,14 +129,18 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 }
 
 // ---------------------------------------------------------------------------
-// hosting (Consumption plan, Linux)
+// hosting (Flex Consumption plan, Linux)
+//
+// Linux Consumption (Y1) does NOT support .NET 10 isolated, so the app runs on
+// Flex Consumption (FC1) — the consumption-based, scale-to-zero successor that
+// supports current .NET versions.
 // ---------------------------------------------------------------------------
 resource hostingPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: planName
   location: location
   sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
+    name: 'FC1'
+    tier: 'FlexConsumption'
   }
   kind: 'functionapp,linux'
   properties: {
@@ -165,11 +185,29 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: hostingPlan.id
     httpsOnly: true
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}${deploymentContainer.name}'
+          authentication: {
+            type: 'StorageAccountConnectionString'
+            storageAccountConnectionStringName: 'DEPLOYMENT_STORAGE_CONNECTION_STRING'
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'dotnet-isolated'
+        version: '10.0'
+      }
+    }
     siteConfig: {
-      linuxFxVersion: 'DOTNET-ISOLATED|8.0'
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
-      use32BitWorkerProcess: false
       cors: {
         // The SWA free tier can't proxy /api/* to an external Function App
         // (that needs Standard SKU's linked-backend feature), so the browser
@@ -185,11 +223,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
       appSettings: [
         {
           name: 'AzureWebJobsStorage'
-          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
+          value: storageConnectionString
         }
-        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
-        { name: 'FUNCTIONS_WORKER_RUNTIME',    value: 'dotnet-isolated' }
-        { name: 'WEBSITE_RUN_FROM_PACKAGE',    value: '1' }
+        {
+          name: 'DEPLOYMENT_STORAGE_CONNECTION_STRING'
+          value: storageConnectionString
+        }
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
           value: appInsights.properties.ConnectionString

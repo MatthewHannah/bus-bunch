@@ -10,8 +10,8 @@ resource-group scope.
 | Storage account | Standard_LRS | Functions runtime requirement |
 | Log Analytics workspace | PerGB2018 (30 day retention) | App Insights backend |
 | Application Insights | workspace-based | Function logs / traces |
-| App Service plan | **Y1 Dynamic (Consumption, free tier)** | Hosts the Function App |
-| Function App | Linux, dotnet-isolated 8 | Runs the pollers |
+| App Service plan | **FC1 Flex Consumption (Linux)** | Hosts the Function App (.NET 10) |
+| Function App | Linux, dotnet-isolated 10 | Runs the pollers |
 | Azure SQL server | Entra-only auth | No SQL passwords |
 | Azure SQL database | **Basic, 5 GiB (~$5/mo)** | Snapshots + fact tables |
 | SQL firewall rule | `AllowAllWindowsAzureIps` | Lets the Function reach SQL |
@@ -28,6 +28,7 @@ az deployment group create \
   --resource-group $RG \
   --template-file infra/main.bicep \
   --parameters \
+    location=centralus \
     sqlAadAdminLogin="$(az ad signed-in-user show --query userPrincipalName -o tsv)" \
     sqlAadAdminObjectId="$(az ad signed-in-user show --query id -o tsv)"
 ```
@@ -49,12 +50,17 @@ az deployment group show -g $RG -n main \
    done
    ```
 
-2. **Grant the Function MI access.** Edit `sql/000_grant_mi.sql`,
+2. **Grant the Function MI access.** Edit `sql/001_grant_mi.sql`,
    set `@miName` to the Function App name (`functionAppName` output),
    then:
    ```sh
-   sqlcmd -S $FQDN -d busbunch -G -i sql/000_grant_mi.sql
+   sqlcmd -S $FQDN -d busbunch -G -i sql/001_grant_mi.sql
    ```
+
+   > Note: if the Function App is ever recreated (e.g. plan changes), its
+   > system-assigned managed identity gets a new object ID. Drop and recreate
+   > the SQL user so it rebinds to the new identity:
+   > `DROP USER IF EXISTS [<functionAppName>];` then re-run `sql/001_grant_mi.sql`.
 
 ## Deploying the Function code
 
