@@ -55,9 +55,10 @@ param retentionRawDays int = 14
 @description('SQL database name.')
 param sqlDatabaseName string = 'busbunch'
 
-@description('Origins allowed to call the Function App API directly (in addition to the Static Web App default hostname, which is added automatically). Useful for local dev (http://localhost:5173) or a custom domain.')
+@description('Origins allowed to call the Function App API directly (in addition to the Static Web App default hostname, which is added automatically). Include every Static Web Apps custom domain that serves the frontend.')
 param extraApiCorsOrigins array = [
   'http://localhost:5173'
+  'https://busbunch.mrhannah.com'
 ]
 
 // ---------------------------------------------------------------------------
